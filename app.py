@@ -9,15 +9,9 @@ import streamlit as st
 from dateutil import parser
 
 
-# =========================
-# Page config
-# =========================
 st.set_page_config(page_title="Toast Meal Break Audit", page_icon="🛡️", layout="wide")
 
 
-# =========================
-# Defaults / session state
-# =========================
 DEFAULT_LOCATIONS = {
     "Tacos El Franc - Gaslamp Quarter": "ac4c6cbd-8723-45cb-bf16-6d31369c5b50",
     "Tacos El Franc - National City (Plaza Bonita)": "2bef5cef-4e30-4d2a-860f-d43406a5ff29",
@@ -32,7 +26,7 @@ DEFAULTS = {
     "second_meal_deadline_hours": 10.0,
     "min_break_minutes": 30,
     "include_archived": False,
-    "meal_break_type_guids": "",  # comma-separated optional filter
+    "meal_break_type_guids": "",
 }
 
 for key, value in DEFAULTS.items():
@@ -40,9 +34,6 @@ for key, value in DEFAULTS.items():
         st.session_state[key] = value
 
 
-# =========================
-# Secrets / config readers
-# =========================
 def secret_or_env(name: str, default: str = "") -> str:
     if name in st.secrets:
         return str(st.secrets[name])
@@ -54,7 +45,6 @@ def get_config():
     client_id = secret_or_env("TOAST_CLIENT_ID")
     client_secret = secret_or_env("TOAST_CLIENT_SECRET")
     toast_timezone = st.session_state["toast_timezone"]
-
     return {
         "api_host": api_host,
         "client_id": client_id,
@@ -63,9 +53,6 @@ def get_config():
     }
 
 
-# =========================
-# Toast API helpers
-# =========================
 def get_auth_token(api_host: str, client_id: str, client_secret: str) -> dict:
     url = f"{api_host}/authentication/v1/authentication/login"
     payload = {
@@ -93,6 +80,11 @@ def get_employees(api_host: str, token: str, restaurant_guid: str) -> list:
     return response.json()
 
 
+def format_toast_utc(dt: datetime) -> str:
+    dt_utc = dt.astimezone(ZoneInfo("UTC"))
+    return dt_utc.strftime("%Y-%m-%dT%H:%M:%S.000%z")
+
+
 def get_time_entries(
     api_host: str,
     token: str,
@@ -104,8 +96,8 @@ def get_time_entries(
 ) -> list:
     url = f"{api_host}/labor/v1/timeEntries"
     params = {
-        "startDate": start_dt.isoformat(),
-        "endDate": end_dt.isoformat(),
+        "startDate": format_toast_utc(start_dt),
+        "endDate": format_toast_utc(end_dt),
         "includeMissedBreaks": str(include_missed_breaks).lower(),
         "includeArchived": str(include_archived).lower(),
     }
@@ -119,9 +111,6 @@ def get_time_entries(
     return response.json()
 
 
-# =========================
-# Parsing / normalization
-# =========================
 def to_local_dt(dt_str: str | None, tz_name: str):
     if not dt_str:
         return None
@@ -130,12 +119,12 @@ def to_local_dt(dt_str: str | None, tz_name: str):
 
 def build_employee_lookup(employees: list) -> dict:
     lookup = {}
-    for e in employees:
-        guid = e.get("guid")
+    for employee in employees:
+        guid = employee.get("guid")
         if not guid:
             continue
-        first = (e.get("chosenName") or e.get("firstName") or "").strip()
-        last = (e.get("lastName") or "").strip()
+        first = (employee.get("chosenName") or employee.get("firstName") or "").strip()
+        last = (employee.get("lastName") or "").strip()
         display = f"{first} {last}".strip() or guid
         lookup[guid] = display
     return lookup
@@ -153,52 +142,52 @@ def safe_float(value, default=0.0):
 def parse_guid_list(raw_text: str) -> set[str]:
     if not raw_text:
         return set()
-    return {x.strip() for x in raw_text.split(",") if x.strip()}
+    return {item.strip() for item in raw_text.split(",") if item.strip()}
 
 
 def normalize_breaks(te: dict, tz_name: str, meal_break_type_guids: set[str], min_break_minutes: int) -> list:
     normalized = []
     min_td = timedelta(minutes=min_break_minutes)
 
-    for b in te.get("breaks") or []:
-        break_type_guid = ((b.get("breakType") or {}).get("guid"))
-        b_start = to_local_dt(b.get("inDate"), tz_name)
-        b_end = to_local_dt(b.get("outDate"), tz_name)
-        missed = bool(b.get("missed", False))
-        waived = bool(b.get("waived", False)) if "waived" in b else False
-        paid = b.get("paid")
-        audit_response = b.get("auditResponse")
+    for break_item in te.get("breaks") or []:
+        break_type_guid = ((break_item.get("breakType") or {}).get("guid"))
+        break_start = to_local_dt(break_item.get("inDate"), tz_name)
+        break_end = to_local_dt(break_item.get("outDate"), tz_name)
+        missed = bool(break_item.get("missed", False))
+        waived = bool(break_item.get("waived", False)) if "waived" in break_item else False
+        paid = break_item.get("paid")
+        audit_response = break_item.get("auditResponse")
 
         duration = None
         duration_minutes = None
-        if b_start and b_end:
-            duration = b_end - b_start
+        if break_start and break_end:
+            duration = break_end - break_start
             duration_minutes = round(duration.total_seconds() / 60.0, 1)
 
         passes_type_filter = (not meal_break_type_guids) or (break_type_guid in meal_break_type_guids)
         passes_duration_filter = (duration is not None and duration >= min_td)
 
-        normalized.append({
-            "break_type_guid": break_type_guid,
-            "start": b_start,
-            "end": b_end,
-            "duration": duration,
-            "duration_minutes": duration_minutes,
-            "missed": missed,
-            "waived": waived,
-            "paid": paid,
-            "audit_response": audit_response,
-            "counts_as_meal": (not missed) and (not waived) and passes_type_filter and passes_duration_filter,
-            "is_missed_meal_candidate": missed and passes_type_filter,
-        })
+        normalized.append(
+            {
+                "break_type_guid": break_type_guid,
+                "start": break_start,
+                "end": break_end,
+                "duration": duration,
+                "duration_minutes": duration_minutes,
+                "missed": missed,
+                "waived": waived,
+                "paid": paid,
+                "audit_response": audit_response,
+                "counts_as_meal": (not missed) and (not waived) and passes_type_filter and passes_duration_filter,
+                "is_missed_meal_candidate": missed and passes_type_filter,
+            }
+        )
 
-    normalized.sort(key=lambda x: (x["start"] is None, x["start"] or datetime.max.replace(tzinfo=ZoneInfo(tz_name))))
+    far_future = datetime(9999, 12, 31, tzinfo=ZoneInfo(tz_name))
+    normalized.sort(key=lambda item: item["start"] or far_future)
     return normalized
 
 
-# =========================
-# Audit logic
-# =========================
 def audit_time_entries(
     time_entries: list,
     employee_lookup: dict,
@@ -238,56 +227,81 @@ def audit_time_entries(
             meal_break_type_guids=meal_break_type_guids,
             min_break_minutes=min_break_minutes,
         )
-        actual_meal_breaks = [b for b in breaks if b["counts_as_meal"]]
+        actual_meal_breaks = [item for item in breaks if item["counts_as_meal"]]
 
         first_deadline = start_local + timedelta(hours=meal_deadline_hours)
         second_deadline = start_local + timedelta(hours=second_meal_deadline_hours)
 
-        shift_rows.append({
-            "Nombre": employee_name,
-            "Employee GUID": employee_guid,
-            "Shift GUID": shift_guid,
-            "Business Date": business_date,
-            "Shift Start": start_local.strftime("%Y-%m-%d %I:%M %p %Z"),
-            "Shift End": end_local.strftime("%Y-%m-%d %I:%M %p %Z") if end_local else "OPEN",
-            "Regular Hours": round(regular_hours, 2),
-            "Overtime Hours": round(overtime_hours, 2),
-            "Worked Hours": round(worked_hours, 2),
-            "Meal Breaks Detectados": len(actual_meal_breaks),
-            "Primer Meal Deadline": first_deadline.strftime("%I:%M %p"),
-            "Segundo Meal Deadline": second_deadline.strftime("%I:%M %p"),
-            "Breaks (debug)": " | ".join(
-                [
-                    (
-                        f"{b['start'].strftime('%I:%M %p') if b['start'] else 'NA'}"
-                        f"-{b['end'].strftime('%I:%M %p') if b['end'] else 'NA'}"
-                        f" ({b['duration_minutes']}m, missed={b['missed']}, type={b['break_type_guid']})"
-                    )
-                    for b in breaks
-                ]
-            )
-        })
+        shift_rows.append(
+            {
+                "Nombre": employee_name,
+                "Employee GUID": employee_guid,
+                "Shift GUID": shift_guid,
+                "Business Date": business_date,
+                "Shift Start": start_local.strftime("%Y-%m-%d %I:%M %p %Z"),
+                "Shift End": end_local.strftime("%Y-%m-%d %I:%M %p %Z") if end_local else "OPEN",
+                "Regular Hours": round(regular_hours, 2),
+                "Overtime Hours": round(overtime_hours, 2),
+                "Worked Hours": round(worked_hours, 2),
+                "Meal Breaks Detectados": len(actual_meal_breaks),
+                "Primer Meal Deadline": first_deadline.strftime("%I:%M %p"),
+                "Segundo Meal Deadline": second_deadline.strftime("%I:%M %p"),
+                "Breaks (debug)": " | ".join(
+                    [
+                        (
+                            f"{item['start'].strftime('%I:%M %p') if item['start'] else 'NA'}"
+                            f"-{item['end'].strftime('%I:%M %p') if item['end'] else 'NA'}"
+                            f" ({item['duration_minutes']}m, missed={item['missed']}, type={item['break_type_guid']})"
+                        )
+                        for item in breaks
+                    ]
+                ),
+            }
+        )
 
-        # Rule 1: first meal required only if worked_hours > waiver_limit_hours
         if worked_hours > waiver_limit_hours:
             if not actual_meal_breaks:
-                violations.append({
-                    "Nombre": employee_name,
-                    "Employee GUID": employee_guid,
-                    "Shift GUID": shift_guid,
-                    "Business Date": business_date,
-                    "Shift Start": start_local.strftime("%Y-%m-%d %I:%M %p %Z"),
-                    "Shift End": end_local.strftime("%Y-%m-%d %I:%M %p %Z") if end_local else "OPEN",
-                    "Regular Hours": round(regular_hours, 2),
-                    "Overtime Hours": round(overtime_hours, 2),
-                    "Worked Hours": round(worked_hours, 2),
-                    "Violación": "Missed Meal Break",
-                    "Detalles": f"Shift > {waiver_limit_hours}h sin meal break válido.",
-                })
+                violations.append(
+                    {
+                        "Nombre": employee_name,
+                        "Employee GUID": employee_guid,
+                        "Shift GUID": shift_guid,
+                        "Business Date": business_date,
+                        "Shift Start": start_local.strftime("%Y-%m-%d %I:%M %p %Z"),
+                        "Shift End": end_local.strftime("%Y-%m-%d %I:%M %p %Z") if end_local else "OPEN",
+                        "Regular Hours": round(regular_hours, 2),
+                        "Overtime Hours": round(overtime_hours, 2),
+                        "Worked Hours": round(worked_hours, 2),
+                        "Violación": "Missed Meal Break",
+                        "Detalles": f"Shift > {waiver_limit_hours}h sin meal break válido.",
+                    }
+                )
             else:
                 first_break_start = actual_meal_breaks[0]["start"]
                 if first_break_start and first_break_start > first_deadline:
-                    violations.append({
+                    violations.append(
+                        {
+                            "Nombre": employee_name,
+                            "Employee GUID": employee_guid,
+                            "Shift GUID": shift_guid,
+                            "Business Date": business_date,
+                            "Shift Start": start_local.strftime("%Y-%m-%d %I:%M %p %Z"),
+                            "Shift End": end_local.strftime("%Y-%m-%d %I:%M %p %Z") if end_local else "OPEN",
+                            "Regular Hours": round(regular_hours, 2),
+                            "Overtime Hours": round(overtime_hours, 2),
+                            "Worked Hours": round(worked_hours, 2),
+                            "Violación": "Late Meal Break",
+                            "Detalles": (
+                                f"Primer meal a las {first_break_start.strftime('%I:%M %p')}. "
+                                f"Debió iniciar no después de las {first_deadline.strftime('%I:%M %p')}."
+                            ),
+                        }
+                    )
+
+        if worked_hours > second_meal_limit_hours:
+            if len(actual_meal_breaks) < 2:
+                violations.append(
+                    {
                         "Nombre": employee_name,
                         "Employee GUID": employee_guid,
                         "Shift GUID": shift_guid,
@@ -297,58 +311,38 @@ def audit_time_entries(
                         "Regular Hours": round(regular_hours, 2),
                         "Overtime Hours": round(overtime_hours, 2),
                         "Worked Hours": round(worked_hours, 2),
-                        "Violación": "Late Meal Break",
+                        "Violación": "Missing 2nd Meal",
                         "Detalles": (
-                            f"Primer meal a las {first_break_start.strftime('%I:%M %p')}. "
-                            f"Debió iniciar no después de las {first_deadline.strftime('%I:%M %p')}."
+                            f"Shift > {second_meal_limit_hours}h y solo se detectaron "
+                            f"{len(actual_meal_breaks)} meal break(s) válidos."
                         ),
-                    })
-
-        # Rule 2: second meal only if worked_hours > second_meal_limit_hours
-        if worked_hours > second_meal_limit_hours:
-            if len(actual_meal_breaks) < 2:
-                violations.append({
-                    "Nombre": employee_name,
-                    "Employee GUID": employee_guid,
-                    "Shift GUID": shift_guid,
-                    "Business Date": business_date,
-                    "Shift Start": start_local.strftime("%Y-%m-%d %I:%M %p %Z"),
-                    "Shift End": end_local.strftime("%Y-%m-%d %I:%M %p %Z") if end_local else "OPEN",
-                    "Regular Hours": round(regular_hours, 2),
-                    "Overtime Hours": round(overtime_hours, 2),
-                    "Worked Hours": round(worked_hours, 2),
-                    "Violación": "Missing 2nd Meal",
-                    "Detalles": (
-                        f"Shift > {second_meal_limit_hours}h y solo se detectaron "
-                        f"{len(actual_meal_breaks)} meal break(s) válidos."
-                    ),
-                })
+                    }
+                )
             else:
                 second_break_start = actual_meal_breaks[1]["start"]
                 if second_break_start and second_break_start > second_deadline:
-                    violations.append({
-                        "Nombre": employee_name,
-                        "Employee GUID": employee_guid,
-                        "Shift GUID": shift_guid,
-                        "Business Date": business_date,
-                        "Shift Start": start_local.strftime("%Y-%m-%d %I:%M %p %Z"),
-                        "Shift End": end_local.strftime("%Y-%m-%d %I:%M %p %Z") if end_local else "OPEN",
-                        "Regular Hours": round(regular_hours, 2),
-                        "Overtime Hours": round(overtime_hours, 2),
-                        "Worked Hours": round(worked_hours, 2),
-                        "Violación": "Late 2nd Meal",
-                        "Detalles": (
-                            f"Segundo meal a las {second_break_start.strftime('%I:%M %p')}. "
-                            f"Debió iniciar no después de las {second_deadline.strftime('%I:%M %p')}."
-                        ),
-                    })
+                    violations.append(
+                        {
+                            "Nombre": employee_name,
+                            "Employee GUID": employee_guid,
+                            "Shift GUID": shift_guid,
+                            "Business Date": business_date,
+                            "Shift Start": start_local.strftime("%Y-%m-%d %I:%M %p %Z"),
+                            "Shift End": end_local.strftime("%Y-%m-%d %I:%M %p %Z") if end_local else "OPEN",
+                            "Regular Hours": round(regular_hours, 2),
+                            "Overtime Hours": round(overtime_hours, 2),
+                            "Worked Hours": round(worked_hours, 2),
+                            "Violación": "Late 2nd Meal",
+                            "Detalles": (
+                                f"Segundo meal a las {second_break_start.strftime('%I:%M %p')}. "
+                                f"Debió iniciar no después de las {second_deadline.strftime('%I:%M %p')}."
+                            ),
+                        }
+                    )
 
     return pd.DataFrame(violations), pd.DataFrame(shift_rows)
 
 
-# =========================
-# UI
-# =========================
 st.markdown(
     """
     <style>
@@ -398,9 +392,7 @@ with st.sidebar:
 config = get_config()
 
 if not config["client_id"] or not config["client_secret"]:
-    st.error(
-        "Faltan credenciales de Toast. Guarda TOAST_CLIENT_ID y TOAST_CLIENT_SECRET en .streamlit/secrets.toml o variables de entorno."
-    )
+    st.error("Faltan credenciales de Toast. Guarda TOAST_CLIENT_ID y TOAST_CLIENT_SECRET en .streamlit/secrets.toml o variables de entorno.")
     st.stop()
 
 col_a, col_b = st.columns(2)
@@ -556,25 +548,21 @@ if st.button("▶️ Ejecutar auditoría", type="primary", use_container_width=T
             use_container_width=True,
         )
 
-    except requests.HTTPError as e:
+    except requests.HTTPError as error:
         response_text = ""
         try:
-            response_text = e.response.text
+            response_text = error.response.text
         except Exception:
             pass
-        st.error(f"Error HTTP con Toast API: {e}\n\n{response_text}")
-    except Exception as e:
-        st.exception(e)
+        st.error(f"Error HTTP con Toast API: {error}\n\n{response_text}")
+    except Exception as error:
+        st.exception(error)
 
-
-# =========================
-# Setup help
-# =========================
 with st.expander("Ver ejemplo de .streamlit/secrets.toml"):
     st.code(
         """
 TOAST_CLIENT_ID = "pega_aqui_tu_client_id"
-TOAST_CLIENT_SECRET = "pega_aqui_tu_client_secret"
+TOAST_CLIENT_SECRET = "pega_aqui_tu_client_secret_rotado"
         """.strip(),
         language="toml",
     )
@@ -588,4 +576,3 @@ with st.expander("Notas de precisión"):
 - El panel **Debug de shifts / breaks** te permite revisar exactamente qué breaks vio la API en cada shift.
         """
     )
-

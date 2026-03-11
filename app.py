@@ -360,8 +360,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("🛡️ Toast Meal Break Audit")
-st.caption("Auditoría por TimeEntry usando la API de Toast, no CSV.")
+st.title("🛡️ Toast Tacos Franc Meal Break Audit")
+st.caption("Auditoría por TimeEntry usando la API de Toast.")
 
 with st.sidebar:
     st.header("Configuración")

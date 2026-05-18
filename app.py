@@ -123,10 +123,15 @@ def build_employee_lookup(employees: list) -> dict:
         guid = employee.get("guid")
         if not guid:
             continue
+
         first = (employee.get("chosenName") or employee.get("firstName") or "").strip()
         last = (employee.get("lastName") or "").strip()
-        display = f"{first} {last}".strip() or guid
+
+        # Formato: Apellido Nombre
+        display = f"{last} {first}".strip() or guid
+
         lookup[guid] = display
+
     return lookup
 
 
